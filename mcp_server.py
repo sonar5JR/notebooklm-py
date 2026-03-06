@@ -7,8 +7,10 @@ programmatic access to Google NotebookLM via the Model Context Protocol.
 import asyncio
 import json
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -22,6 +24,80 @@ logger = logging.getLogger(__name__)
 
 # Global client reference
 _client: NotebookLMClient | None = None
+
+# ─── Safe download directory ─────────────────────────────────────────────────
+# All artifact downloads are confined to this directory to prevent
+# path-traversal attacks via prompt injection. Override with the
+# NOTEBOOKLM_DOWNLOAD_DIR environment variable.
+ALLOWED_DOWNLOAD_DIR = Path(
+    os.environ.get("NOTEBOOKLM_DOWNLOAD_DIR", "./downloads")
+).resolve()
+
+# Sensitive directory patterns that must NEVER be written to
+_SENSITIVE_DIRS = {
+    ".ssh", ".gnupg", ".config", ".aws", ".azure", ".kube",
+    "AppData", "System32", "SysWOW64", "Program Files",
+    "Program Files (x86)", "Windows",
+}
+
+
+def _sanitize_output_path(output_path: str) -> Path:
+    """Sanitize an output_path to prevent path-traversal attacks.
+
+    Security guarantees:
+    1. Rejects paths containing '..' traversal sequences
+    2. Blocks writes to sensitive system directories
+    3. Confines all writes to ALLOWED_DOWNLOAD_DIR
+    4. Auto-creates the target directory if needed
+
+    Raises:
+        ValueError: If the path is unsafe or escapes the allowed directory.
+    """
+    # Step 1: Reject any raw traversal sequences before resolution
+    if ".." in output_path:
+        raise ValueError(
+            f"Path traversal detected: output_path must not contain '..'. "
+            f"Got: {output_path!r}"
+        )
+
+    # Step 2: Strip leading slashes / drive letters to force relative interpretation
+    #         e.g. "C:\\Windows\\evil.exe" -> "Windows\\evil.exe"
+    #         e.g. "/etc/passwd" -> "etc/passwd"
+    cleaned = output_path
+    # Remove Windows drive prefix like C:\ or D:\
+    if len(cleaned) >= 2 and cleaned[1] == ":":
+        cleaned = cleaned[2:]
+    # Strip leading slashes/backslashes
+    cleaned = cleaned.lstrip("/").lstrip("\\")
+
+    if not cleaned:
+        raise ValueError("output_path must not be empty after sanitization.")
+
+    # Step 3: Resolve within the allowed directory
+    safe_path = (ALLOWED_DOWNLOAD_DIR / cleaned).resolve()
+
+    # Step 4: Verify the resolved path is still within ALLOWED_DOWNLOAD_DIR
+    try:
+        safe_path.relative_to(ALLOWED_DOWNLOAD_DIR)
+    except ValueError:
+        raise ValueError(
+            f"Path escapes the allowed download directory. "
+            f"Resolved: {safe_path}, Allowed: {ALLOWED_DOWNLOAD_DIR}"
+        )
+
+    # Step 5: Check against sensitive directory names
+    for part in safe_path.parts:
+        if part in _SENSITIVE_DIRS:
+            raise ValueError(
+                f"Refusing to write to sensitive directory: {part!r} "
+                f"in path {safe_path}"
+            )
+
+    # Step 6: Ensure target directory exists
+    safe_path.parent.mkdir(parents=True, exist_ok=True)
+
+    logger.info("Sanitized output path: %s -> %s", output_path, safe_path)
+    return safe_path
 
 
 async def get_client() -> NotebookLMClient:
@@ -813,8 +889,9 @@ async def download_audio(
 
     Returns the output file path.
     """
+    safe_path = _sanitize_output_path(output_path)
     client = await get_client()
-    path = await client.artifacts.download_audio(notebook_id, output_path, artifact_id=artifact_id)
+    path = await client.artifacts.download_audio(notebook_id, str(safe_path), artifact_id=artifact_id)
     return json.dumps({"downloaded": str(path)})
 
 
@@ -831,8 +908,9 @@ async def download_video(
 
     Returns the output file path.
     """
+    safe_path = _sanitize_output_path(output_path)
     client = await get_client()
-    path = await client.artifacts.download_video(notebook_id, output_path, artifact_id=artifact_id)
+    path = await client.artifacts.download_video(notebook_id, str(safe_path), artifact_id=artifact_id)
     return json.dumps({"downloaded": str(path)})
 
 
@@ -853,9 +931,10 @@ async def download_quiz(
 
     Returns the output file path.
     """
+    safe_path = _sanitize_output_path(output_path)
     client = await get_client()
     path = await client.artifacts.download_quiz(
-        notebook_id, output_path, output_format=output_format, artifact_id=artifact_id
+        notebook_id, str(safe_path), output_format=output_format, artifact_id=artifact_id
     )
     return json.dumps({"downloaded": str(path)})
 
@@ -877,9 +956,10 @@ async def download_flashcards(
 
     Returns the output file path.
     """
+    safe_path = _sanitize_output_path(output_path)
     client = await get_client()
     path = await client.artifacts.download_flashcards(
-        notebook_id, output_path, output_format=output_format, artifact_id=artifact_id
+        notebook_id, str(safe_path), output_format=output_format, artifact_id=artifact_id
     )
     return json.dumps({"downloaded": str(path)})
 
@@ -897,9 +977,10 @@ async def download_slide_deck(
 
     Returns the output file path.
     """
+    safe_path = _sanitize_output_path(output_path)
     client = await get_client()
     path = await client.artifacts.download_slide_deck(
-        notebook_id, output_path, artifact_id=artifact_id
+        notebook_id, str(safe_path), artifact_id=artifact_id
     )
     return json.dumps({"downloaded": str(path)})
 
@@ -917,9 +998,10 @@ async def download_infographic(
 
     Returns the output file path.
     """
+    safe_path = _sanitize_output_path(output_path)
     client = await get_client()
     path = await client.artifacts.download_infographic(
-        notebook_id, output_path, artifact_id=artifact_id
+        notebook_id, str(safe_path), artifact_id=artifact_id
     )
     return json.dumps({"downloaded": str(path)})
 
@@ -936,8 +1018,9 @@ async def download_mind_map(
 
     Returns the output file path.
     """
+    safe_path = _sanitize_output_path(output_path)
     client = await get_client()
-    path = await client.artifacts.download_mind_map(notebook_id, output_path)
+    path = await client.artifacts.download_mind_map(notebook_id, str(safe_path))
     return json.dumps({"downloaded": str(path)})
 
 
@@ -954,9 +1037,10 @@ async def download_data_table(
 
     Returns the output file path.
     """
+    safe_path = _sanitize_output_path(output_path)
     client = await get_client()
     path = await client.artifacts.download_data_table(
-        notebook_id, output_path, artifact_id=artifact_id
+        notebook_id, str(safe_path), artifact_id=artifact_id
     )
     return json.dumps({"downloaded": str(path)})
 
