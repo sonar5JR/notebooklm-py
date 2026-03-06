@@ -358,7 +358,12 @@ class Notebook:
         if len(data) > 5 and isinstance(data[5], list) and len(data[5]) > 1:
             is_owner = data[5][1] is False
 
-        return cls(id=notebook_id, title=title, created_at=created_at, is_owner=is_owner)
+        # Extract sources count from data[1] (array of source entries)
+        sources_count = 0
+        if len(data) > 1 and isinstance(data[1], list):
+            sources_count = len(data[1])
+
+        return cls(id=notebook_id, title=title, created_at=created_at, is_owner=is_owner, sources_count=sources_count)
 
 
 @dataclass
